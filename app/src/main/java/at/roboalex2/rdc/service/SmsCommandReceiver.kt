@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.provider.Telephony
+import android.util.Log
 
 class SmsCommandReceiver : BroadcastReceiver() {
 
@@ -17,6 +18,7 @@ class SmsCommandReceiver : BroadcastReceiver() {
             val body   = msg.messageBody ?: continue
 
             // Build intent for your Service
+            Log.i(this.javaClass.name, "Received SMS from $sender: $body")
             val svcIntent = Intent(ctx, SmsProcessingService::class.java).apply {
                 putExtra(SmsProcessingService.EXTRA_SENDER, sender)
                 putExtra(SmsProcessingService.EXTRA_BODY, body)

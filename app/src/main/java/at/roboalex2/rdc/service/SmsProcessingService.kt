@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.IBinder
 import android.telephony.SmsManager
 import android.telephony.SubscriptionManager
+import android.util.Log
 import androidx.annotation.RequiresPermission
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -44,14 +45,14 @@ class SmsProcessingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val sender = intent?.getStringExtra(EXTRA_SENDER) ?: return START_NOT_STICKY
         val body   = intent.getStringExtra(EXTRA_BODY)   ?: return START_NOT_STICKY
-
+        Log.i(this.javaClass.name, "Foreground service SMS with $sender: $body")
         // 2) Parse and check permissions
         val parts = body.split("\\s+".toRegex(), limit = 2)
         val cmd = parts[0].lowercase(Locale.US)
         val args = if (parts.size > 1) parts[1].lowercase(Locale.US) else ""
         val dao    = AppDatabase.getDatabase(applicationContext).numberDao()
         val perms  = runBlocking { dao.getNumber(sender)?.permissions ?: emptyList() }
-
+        Log.i(this.javaClass.name, "Foreground service SMS with $cmd, $args and perm success")
         if (perms.isNotEmpty()) {
             runBlocking {
                 AppDatabase
@@ -65,6 +66,9 @@ class SmsProcessingService : Service() {
                         )
                     )
             }
+        } else {
+            Log.i(this.javaClass.name, "No permissions for $sender")
+            return START_NOT_STICKY
         }
 
         if ("location".equals(cmd, true) && "Location" in perms) {
