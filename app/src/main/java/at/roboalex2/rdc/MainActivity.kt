@@ -61,9 +61,22 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun PermissionRequester(content: @Composable () -> Unit) {
-        val allPermissionsGranted = REQUIRED_PERMISSIONS.all { perm ->
+        val filteredPermissions = REQUIRED_PERMISSIONS.filter { perm ->
+            when (perm) {
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION ->
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                Manifest.permission.FOREGROUND_SERVICE_LOCATION ->
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                Manifest.permission.POST_NOTIFICATIONS ->
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                else -> true
+            }
+        }
+
+        val allPermissionsGranted = filteredPermissions.all { perm ->
             ContextCompat.checkSelfPermission(this@MainActivity, perm) == PackageManager.PERMISSION_GRANTED
         }
+
         if (allPermissionsGranted) {
             content()
             return
@@ -78,7 +91,7 @@ class MainActivity : ComponentActivity() {
             contract = ActivityResultContracts.RequestPermission()
         ) { granted ->
             if (granted) {
-                if (currentIndex < REQUIRED_PERMISSIONS.lastIndex) {
+                if (currentIndex < filteredPermissions.lastIndex) {
                     // move to next permission
                     currentIndex++
                 } else {
@@ -92,7 +105,7 @@ class MainActivity : ComponentActivity() {
         // Launch whenever currentIndex changes and not done
         LaunchedEffect(currentIndex, allGranted) {
             if (!allGranted) {
-                val permission = REQUIRED_PERMISSIONS[currentIndex]
+                val permission = filteredPermissions[currentIndex]
                 if (ContextCompat.checkSelfPermission(
                         this@MainActivity, permission
                     ) != PackageManager.PERMISSION_GRANTED
@@ -100,7 +113,7 @@ class MainActivity : ComponentActivity() {
                     permissionLauncher.launch(permission)
                 } else {
                     // already granted, skip to next
-                    if (currentIndex < REQUIRED_PERMISSIONS.lastIndex) {
+                    if (currentIndex < filteredPermissions.lastIndex) {
                         currentIndex++
                     } else {
                         allGranted = true
@@ -123,7 +136,7 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                val permName = REQUIRED_PERMISSIONS.getOrNull(currentIndex)
+                val permName = filteredPermissions.getOrNull(currentIndex)
                     ?.substringAfterLast('.') ?: "DND access"
                 Text(text = "Requesting $permName")
             }
