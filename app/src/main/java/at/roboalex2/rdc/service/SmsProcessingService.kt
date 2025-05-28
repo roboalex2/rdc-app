@@ -13,25 +13,21 @@ import android.media.AudioManager
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
-import android.telephony.SmsManager
-import android.telephony.SubscriptionManager
 import android.util.Log
-import androidx.annotation.RequiresPermission
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import androidx.core.app.JobIntentService
 import at.roboalex2.rdc.R
 import at.roboalex2.rdc.persistence.AppDatabase
 import at.roboalex2.rdc.persistence.entity.CommandEntity
 import at.roboalex2.rdc.service.fetch.LocationFetcher
 import kotlinx.coroutines.runBlocking
-import java.util.*
+import java.util.Date
+import java.util.Locale
 
 class SmsProcessingService : Service() {
     companion object {
-        private const val JOB_ID = 42
         private const val CHANNEL_ID = "worker_fg_channel"
         private const val CHANNEL_NAME = "Background Worker"
         private const val NOTIF_ID = 4242
@@ -46,111 +42,55 @@ class SmsProcessingService : Service() {
         val sender = intent?.getStringExtra(EXTRA_SENDER) ?: return START_NOT_STICKY
         val body   = intent.getStringExtra(EXTRA_BODY)   ?: return START_NOT_STICKY
         Log.i(this.javaClass.name, "Foreground service SMS with $sender: $body")
-        // 2) Parse and check permissions
+
         val parts = body.split("\\s+".toRegex(), limit = 2)
         val cmd = parts[0].lowercase(Locale.US)
         val args = if (parts.size > 1) parts[1].lowercase(Locale.US) else ""
         val dao    = AppDatabase.getDatabase(applicationContext).numberDao()
         val perms  = runBlocking { dao.getNumber(sender)?.permissions ?: emptyList() }
         Log.i(this.javaClass.name, "Foreground service SMS with $cmd, $args and perm success")
-        if (perms.isNotEmpty()) {
-            runBlocking {
-                AppDatabase
-                    .getDatabase(applicationContext)
-                    .commandDao()
-                    .insertCommand(
-                        CommandEntity(
-                            dateTime = Date().toString(),
-                            issuer   = sender,
-                            type     = body
-                        )
-                    )
-            }
-        } else {
-            Log.i(this.javaClass.name, "No permissions for $sender")
+
+        if (perms.isEmpty()) {
+            Log.i(this.javaClass.name, "No permissions set for $sender")
             return START_NOT_STICKY
         }
 
         if ("location".equals(cmd, true) && "Location" in perms) {
-            startForegroundServiceWithNotification();
+            ensureForegroundServiceWithNotification();
             LocationFetcher.fetchLocation(applicationContext) { reply ->
-                stopForeground(STOP_FOREGROUND_REMOVE);
-                if (ContextCompat.checkSelfPermission(
-                        this, Manifest.permission.SEND_SMS
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    sendReply(this, sender, reply)
-                }
-
-                runBlocking {
-                    AppDatabase
-                        .getDatabase(this@SmsProcessingService)
-                        .commandDao()
-                        .insertCommand(
-                            CommandEntity(
-                                dateTime = Date().toString(),
-                                issuer   = sender,
-                                type     = cmd
-                            )
-                        )
-                }
-
+                SmsSenderService.sendReply(this, sender, reply)
+                saveCommandExecution(sender, cmd)
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 showExecutionNotification(this, sender, cmd)
                 stopSelf()
             }
         } else if ("soundalert".equals(cmd, true) && "SoundAlert" in perms) {
-            startForegroundServiceWithNotification()
-
-            if (ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.SEND_SMS
-                ) == PackageManager.PERMISSION_GRANTED
-            ) {
-                sendReply(this, sender, "Playing Alert")
-            }
+            ensureForegroundServiceWithNotification()
             playAlertSound()
-            runBlocking {
-                AppDatabase
-                    .getDatabase(this@SmsProcessingService)
-                    .commandDao()
-                    .insertCommand(
-                        CommandEntity(
-                            dateTime = Date().toString(),
-                            issuer   = sender,
-                            type     = cmd
-                        )
-                    )
-            }
+            SmsSenderService.sendReply(this, sender, "Playing Alert")
+            saveCommandExecution(sender, cmd)
             stopForeground(STOP_FOREGROUND_REMOVE)
             showExecutionNotification(this, sender, cmd)
             stopSelf()
         } else if ("flashlight".equals(cmd, true) && "Flashlight" in perms) {
-            startForegroundServiceWithNotification()
-
-            var result = "No execution"
-            if ("true" == args || "on" == args || "an" == args) {
-                result = setFlashlight(this, true)
+            ensureForegroundServiceWithNotification()
+            val result: String = if ("true" == args || "on" == args || "an" == args) {
+                setFlashlight(this, true)
             } else {
-                result = setFlashlight(this, false)
+                setFlashlight(this, false)
             }
-
-            if (ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.SEND_SMS
-                ) == PackageManager.PERMISSION_GRANTED
-            ) {
-                sendReply(this, sender, result)
-            }
-            runBlocking {
-                AppDatabase
-                    .getDatabase(this@SmsProcessingService)
-                    .commandDao()
-                    .insertCommand(
-                        CommandEntity(
-                            dateTime = Date().toString(),
-                            issuer   = sender,
-                            type     = cmd
-                        )
-                    )
-            }
+            SmsSenderService.sendReply(this, sender, result)
+            saveCommandExecution(sender, "$cmd $args")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            showExecutionNotification(this, sender, cmd)
+            stopSelf()
+        } else if (("camera".equals(cmd, true) || "photo".equals(cmd, true)) && "Camera" in perms) {
+            ensureForegroundServiceWithNotification()
+            Intent(this, PhotoCaptureActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(PhotoCaptureActivity.EXTRA_RECIPIENT, sender)
+            }.also { startActivity(it) }
+            saveCommandExecution(sender, cmd)
             stopForeground(STOP_FOREGROUND_REMOVE)
             showExecutionNotification(this, sender, cmd)
             stopSelf()
@@ -158,12 +98,26 @@ class SmsProcessingService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startForegroundServiceWithNotification() {
-        // create channel if needed
+    private fun saveCommandExecution(issuer: String, command: String) {
+        runBlocking {
+            AppDatabase
+                .getDatabase(this@SmsProcessingService)
+                .commandDao()
+                .insertCommand(
+                    CommandEntity(
+                        dateTime = Date().toString(),
+                        issuer   = issuer,
+                        type     = command
+                    )
+                )
+        }
+    }
+
+    private fun ensureForegroundServiceWithNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val chan = NotificationChannel(
                 CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Rdc is fetching data..." }
+            ).apply { description = "Rdc is executing command..." }
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(chan)
             chan.setBypassDnd(true)
@@ -171,7 +125,7 @@ class SmsProcessingService : Service() {
         // build & start
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Fetching data…")
+            .setContentTitle("Executing Command…")
             .setOngoing(true)
             .setSilent(true)
             .build()
@@ -198,20 +152,14 @@ class SmsProcessingService : Service() {
         ringtone.play()
     }
 
-    @RequiresPermission(Manifest.permission.SEND_SMS)
-    private fun sendReply(ctx: Context, to: String, text: String) {
-        val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val subId = SubscriptionManager.getDefaultSmsSubscriptionId()
-            ctx.getSystemService(SmsManager::class.java)
-                .createForSubscriptionId(subId)
-        } else {
-            SmsManager.getDefault()
+    private fun setFlashlight(context: Context, turnOn: Boolean): String {
+        if (ContextCompat.checkSelfPermission(
+                context, Manifest.permission.CAMERA
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return "Permission for flashlight not granted"
         }
-        smsManager.sendTextMessage(to, null, text, null, null)
-    }
 
-    @RequiresPermission(Manifest.permission.CAMERA)
-    fun setFlashlight(context: Context, turnOn: Boolean): String {
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         try {
             val cameraId = cameraManager.cameraIdList.firstOrNull { id ->
