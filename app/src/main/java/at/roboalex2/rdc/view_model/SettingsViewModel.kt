@@ -2,14 +2,18 @@
 package at.roboalex2.rdc.view_model
 
 import android.app.Application
+import android.telephony.PhoneNumberUtils
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.*
-import at.roboalex2.rdc.model.NumberItem
 import at.roboalex2.rdc.model.SettingsState
 import at.roboalex2.rdc.persistence.AppDatabase
 import at.roboalex2.rdc.persistence.entity.NumberItemEntity
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
@@ -36,7 +40,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun addNumber(number: String) = viewModelScope.launch {
         val exists = dao.getAllNumbers()
             .first()
-            .any { it.number == number }
+            .any { it.number == PhoneNumberUtils.normalizeNumber(number) }
         if (!exists) {
             dao.upsertNumber(NumberItemEntity(number, permissions = emptyList()))
         }

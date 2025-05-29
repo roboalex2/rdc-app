@@ -29,7 +29,7 @@ object LocationFetcher {
         client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancelSrc.token)
             .addOnSuccessListener { loc ->
                 if (loc != null) {
-                    onResult("Lat:${loc.latitude}, Lon:${loc.longitude}")
+                    onResult("https://www.google.com/maps?q=${loc.latitude},${loc.longitude} \n\nLat: ${loc.latitude}, Lon: ${loc.longitude}")
                 } else {
                     onResult("Location unavailable")
                 }

@@ -14,8 +14,12 @@ import android.hardware.camera2.CameraManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.telephony.PhoneNumberUtils
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -25,7 +29,9 @@ import at.roboalex2.rdc.R
 import at.roboalex2.rdc.persistence.AppDatabase
 import at.roboalex2.rdc.persistence.entity.CommandEntity
 import at.roboalex2.rdc.service.fetch.LocationFetcher
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.runBlocking
+import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
@@ -43,7 +49,9 @@ class SmsProcessingService : Service() {
 
     @SuppressLint("ServiceCast")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val sender = intent?.getStringExtra(EXTRA_SENDER) ?: return START_NOT_STICKY
+        val sender = PhoneNumberUtils.normalizeNumber(
+            intent?.getStringExtra(EXTRA_SENDER) ?: return START_NOT_STICKY
+        )
         val body = intent.getStringExtra(EXTRA_BODY) ?: return START_NOT_STICKY
         Log.i(this.javaClass.name, "Foreground service SMS with $sender: $body")
 
@@ -51,11 +59,16 @@ class SmsProcessingService : Service() {
         val cmd = parts[0].lowercase(Locale.US)
         val args = if (parts.size > 1) parts[1].lowercase(Locale.US) else ""
         val dao = AppDatabase.getDatabase(applicationContext).numberDao()
-        val perms = runBlocking { dao.getNumber(sender)?.permissions ?: emptyList() }
+        val perms = runBlocking {
+            val allNumbers = dao.getAllNumbers().firstOrNull().orEmpty()
+            allNumbers.firstOrNull { PhoneNumberUtils.compare(it.number, sender) }?.permissions
+                ?: emptyList()
+        }
         Log.i(this.javaClass.name, "Foreground service SMS with $cmd, $args and perm success")
 
         if (perms.isEmpty()) {
             Log.i(this.javaClass.name, "No permissions set for $sender")
+            stopSelf()
             return START_NOT_STICKY
         }
 
@@ -68,7 +81,7 @@ class SmsProcessingService : Service() {
                 showExecutionNotification(this, sender, cmd)
                 stopSelf()
             }
-        } else if ("soundalert".equals(cmd, true) && "SoundAlert" in perms) {
+        } else if (("soundalert".equals(cmd, true) || "sound".equals(cmd, true)) && "SoundAlert" in perms) {
             ensureForegroundServiceWithNotification()
             playAlertSound()
             SmsSenderService.sendReply(this, sender, "Playing Alert")
@@ -76,7 +89,7 @@ class SmsProcessingService : Service() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             showExecutionNotification(this, sender, cmd)
             stopSelf()
-        } else if ("flashlight".equals(cmd, true) && "Flashlight" in perms) {
+        } else if (("flashlight".equals(cmd, true) || "light".equals(cmd, true)) && "Flashlight" in perms) {
             ensureForegroundServiceWithNotification()
             val result: String = if ("true" == args || "on" == args || "an" == args) {
                 setFlashlight(this, true)
@@ -92,6 +105,7 @@ class SmsProcessingService : Service() {
             val activity = Intent(this, PhotoCaptureActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 putExtra(PhotoCaptureActivity.EXTRA_RECIPIENT, sender)
+                putExtra(PhotoCaptureActivity.EXTRA_ARGS, args)
             }
 
             val toBundle = ActivityOptions.makeBasic().apply {
@@ -115,17 +129,22 @@ class SmsProcessingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+
+        stopSelf()
         return START_NOT_STICKY
     }
 
     private fun saveCommandExecution(issuer: String, command: String) {
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+            .format(Date())
+
         runBlocking {
             AppDatabase
                 .getDatabase(this@SmsProcessingService)
                 .commandDao()
                 .insertCommand(
                     CommandEntity(
-                        dateTime = Date().toString(),
+                        dateTime = timestamp,
                         issuer = issuer,
                         type = command
                     )
@@ -174,12 +193,11 @@ class SmsProcessingService : Service() {
     }
 
     private fun playAlertSound() {
-        val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        val alarmUri = getAlarmToneNamed("Beep") ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         val ringtone = RingtoneManager.getRingtone(applicationContext, alarmUri) ?: return
+        ringtone.isLooping = true
 
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-
-        // Set alarm stream to max volume
+        val audioManager = getSystemService(AudioManager::class.java) ?: return
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
         audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
 
@@ -191,6 +209,25 @@ class SmsProcessingService : Service() {
         }
 
         ringtone.play()
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (ringtone.isPlaying) {
+                ringtone.stop()
+            }
+        }, 30_000)
+    }
+
+    private fun getAlarmToneNamed(name: String): Uri? {
+        val manager = RingtoneManager(this)
+        manager.setType(RingtoneManager.TYPE_ALARM)
+
+        val cursor = manager.cursor
+        while (cursor.moveToNext()) {
+            val title = cursor.getString(RingtoneManager.TITLE_COLUMN_INDEX)
+            if (title.equals(name, ignoreCase = true)) {
+                return manager.getRingtoneUri(cursor.position)
+            }
+        }
+        return null
     }
 
     private fun setFlashlight(context: Context, turnOn: Boolean): String {

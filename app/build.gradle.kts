@@ -75,5 +75,6 @@ dependencies {
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     implementation(libs.okhttp)
+    implementation(libs.smsmms)
     ksp(libs.room.compiler)
 }

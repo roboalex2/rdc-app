@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -44,7 +45,8 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.MODIFY_AUDIO_SETTINGS,
             Manifest.permission.CAMERA,
             Manifest.permission.READ_SMS,
-            Manifest.permission.SYSTEM_ALERT_WINDOW
+            Manifest.permission.SYSTEM_ALERT_WINDOW,
+            Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
         )
     }
 
@@ -123,7 +125,8 @@ class MainActivity : ComponentActivity() {
         val settingsLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.StartActivityForResult()
         ) { result ->
-            if (Settings.canDrawOverlays(this@MainActivity)) {
+            val pm = getSystemService(PowerManager::class.java)
+            if (Settings.canDrawOverlays(this@MainActivity) || pm.isIgnoringBatteryOptimizations(packageName)) {
                 if (currentIndex < filteredPermissions.lastIndex) {
                     currentIndex++
                 } else {
@@ -146,6 +149,12 @@ class MainActivity : ComponentActivity() {
                         this@MainActivity, permission
                     ) != PackageManager.PERMISSION_GRANTED
                 ) {
+                    if (permission == Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${this@MainActivity.packageName}")
+                        }
+                        settingsLauncher.launch(intent)
+                    } else
                     if (permission == Manifest.permission.SYSTEM_ALERT_WINDOW) {
                         val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
                             data = Uri.parse("package:${this@MainActivity.packageName}")

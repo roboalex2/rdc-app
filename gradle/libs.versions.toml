@@ -44,6 +44,7 @@ androidx-camera-core = { group = "androidx.camera", name = "camera-core", versio
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraLifecycle" }
 androidx-camera-camera2    = { group = "androidx.camera", name = "camera-camera2",  version.ref = "cameraCore" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version = "4.11.0" }
+smsmms = { group = "com.klinkerapps", name = "android-smsmms", version = "5.2.6" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

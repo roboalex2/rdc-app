@@ -1,5 +1,6 @@
 package at.roboalex2.rdc.presentation
 
+import android.telephony.PhoneNumberUtils
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -11,11 +12,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -31,10 +30,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,7 +42,6 @@ import androidx.navigation.NavHostController
 import at.roboalex2.rdc.model.NumberItem
 import at.roboalex2.rdc.navigation.Screen
 import at.roboalex2.rdc.view_model.SettingsViewModel
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -133,7 +129,7 @@ private fun AllNumbersTab(
                 text = {
                     OutlinedTextField(
                         value = newNumber,
-                        onValueChange = { newNumber = it },
+                        onValueChange = { newNumber = PhoneNumberUtils.normalizeNumber(it) },
                         label = { Text("Phone number") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()

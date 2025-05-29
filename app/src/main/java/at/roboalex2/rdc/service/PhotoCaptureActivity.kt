@@ -33,6 +33,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.klinker.android.send_message.Message
+import com.klinker.android.send_message.Settings
+import com.klinker.android.send_message.Transaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,9 +51,11 @@ import kotlin.math.sqrt
 class PhotoCaptureActivity : ComponentActivity() {
     companion object {
         const val EXTRA_RECIPIENT = "extra_recipient"
+        const val EXTRA_ARGS = "extra_args"
     }
 
     private lateinit var recipient: String
+    private var sendMms: Boolean = false
     private lateinit var cameraProvider: ProcessCameraProvider
     private lateinit var imageCapture: ImageCapture
     private val cameraExecutor = Executors.newSingleThreadExecutor()
@@ -60,7 +65,9 @@ class PhotoCaptureActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         recipient = intent.getStringExtra(EXTRA_RECIPIENT) ?: run { finish(); return }
+        sendMms = intent.getStringExtra(EXTRA_ARGS)?.let { it == "mms" } ?: false
         Log.i(this.javaClass.name, "Starting PhotoCaptureActivity for $recipient")
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -165,40 +172,95 @@ class PhotoCaptureActivity : ComponentActivity() {
     private fun sendAllAndFinish() {
         lifecycleScope.launch {
             for (file in outputFiles) {
-                try {
-                    val resized = try {
-                        resizeImageToFitMmsLimit(this@PhotoCaptureActivity, file).apply {
-                            deleteOnExit()
-                        }
-                    } catch (e: Exception) {
-                        Log.w("PhotoCapture", "Resize failed, using original", e)
-                        file
-                    }
-                    previewBitmap.value = BitmapFactory.decodeFile(resized.absolutePath)
-                    val url = withContext(Dispatchers.IO) {
-                        ImageUploadService.uploadToImgur(this@PhotoCaptureActivity, resized)
-                    }
-
-                    SmsSenderService.sendReply(
-                        this@PhotoCaptureActivity,
-                        recipient,
-                        "📸 $url"
-                    )
-                    file.delete()
-                    resized.delete()
-                } catch (e: Exception) {
-                    Log.e("PhotoCapture", "Image upload failed", e)
-                    SmsSenderService.sendReply(
-                        this@PhotoCaptureActivity,
-                        recipient,
-                        "Upload failed (${file.name}): ${e.message?.take(160) ?: "Unknown error"}"
-                    )
-                } finally {
-                    file.delete()
-                }
+                processFile(file)
             }
             finish()
         }
+    }
+
+    private suspend fun processFile(file: File) {
+        val resized = resizeForSending(file)
+        previewBitmap.value = BitmapFactory.decodeFile(resized.absolutePath)
+
+        if (sendMms) {
+            sendAsMmsWithFallback(resized)
+        } else {
+            uploadAndSendWithFallback(resized)
+        }
+
+        cleanupFiles(file, resized)
+    }
+
+    private suspend fun resizeForSending(file: File): File {
+        if (!sendMms) return file
+
+        return try {
+            resizeImageToFitMmsLimit(this@PhotoCaptureActivity, file).apply {
+                deleteOnExit()
+            }
+        } catch (e: Exception) {
+            Log.w("PhotoCapture", "Resize failed, using original", e)
+            file
+        }
+    }
+
+    private fun sendAsMmsWithFallback(file: File) {
+        try {
+            sendAsMms(file)
+        } catch (e: Exception) {
+            Log.e("PhotoCapture", "MMS send failed", e)
+            SmsSenderService.sendReply(
+                this@PhotoCaptureActivity,
+                recipient,
+                "MMS failed: ${e.message?.take(160) ?: "Unknown error"}"
+            )
+        }
+    }
+
+    private suspend fun uploadAndSendWithFallback(file: File) {
+        try {
+            val url = withContext(Dispatchers.IO) {
+                ImageUploadService.uploadToImgur(this@PhotoCaptureActivity, file)
+            }
+            SmsSenderService.sendReply(this@PhotoCaptureActivity, recipient, "📸 $url")
+        } catch (e: Exception) {
+            Log.e("PhotoCapture", "Upload failed", e)
+            SmsSenderService.sendReply(
+                this@PhotoCaptureActivity,
+                recipient,
+                "Upload failed: ${e.message?.take(160) ?: "Unknown error"}"
+            )
+        }
+    }
+
+    private fun cleanupFiles(original: File, resized: File) {
+        try {
+            original.delete()
+            if (resized != original) resized.delete()
+        } catch (e: Exception) {
+            Log.w("PhotoCapture", "Cleanup failed", e)
+        }
+    }
+
+    private fun sendAsMms(file: File) {
+        val cameraLabel = when {
+            file.name.contains("front", ignoreCase = true) -> "Front Camera"
+            file.name.contains("back", ignoreCase = true) -> "Back Camera"
+            else -> "Unknown Camera"
+        }
+
+        val messageText = "📸 Photo from $cameraLabel"
+
+        val settings = Settings().apply {
+            useSystemSending = true
+        }
+
+        val message = Message(messageText, recipient).apply {
+            setImage(BitmapFactory.decodeFile(file.absolutePath))
+        }
+
+        val transaction = Transaction(this@PhotoCaptureActivity, settings)
+        transaction.sendNewMessage(message, Thread.currentThread().id)
     }
 
     suspend fun resizeImageToFitMmsLimit(

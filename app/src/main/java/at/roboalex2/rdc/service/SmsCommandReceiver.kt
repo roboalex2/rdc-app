@@ -26,7 +26,7 @@ class SmsCommandReceiver : BroadcastReceiver() {
 
             // Start as foreground service on O+ to avoid background limits
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ctx.startForegroundService(svcIntent)
+                ctx.startService(svcIntent)
             } else {
                 ctx.startService(svcIntent)
             }
