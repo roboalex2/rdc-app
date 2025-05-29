@@ -158,7 +158,7 @@ class PhotoCaptureActivity : ComponentActivity() {
                         this@PhotoCaptureActivity, recipient,
                         "Photo Capture Error '${tag}': ${exc.message}"
                     )
-                    finish()
+                    onDone()
                 }
             }
 
