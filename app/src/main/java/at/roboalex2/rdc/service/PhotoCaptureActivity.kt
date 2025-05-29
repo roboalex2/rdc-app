@@ -1,23 +1,49 @@
 package at.roboalex2.rdc.service
 
 import android.Manifest
-import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
-import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlin.math.sqrt
 
 class PhotoCaptureActivity : ComponentActivity() {
     companion object {
@@ -28,11 +54,13 @@ class PhotoCaptureActivity : ComponentActivity() {
     private lateinit var cameraProvider: ProcessCameraProvider
     private lateinit var imageCapture: ImageCapture
     private val cameraExecutor = Executors.newSingleThreadExecutor()
-    private val outputFiles = mutableListOf<Uri>()
+    private val outputFiles = mutableListOf<File>()
+    private val previewBitmap = mutableStateOf<Bitmap?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         recipient = intent.getStringExtra(EXTRA_RECIPIENT) ?: run { finish(); return }
+        Log.i(this.javaClass.name, "Starting PhotoCaptureActivity for $recipient")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -59,6 +87,33 @@ class PhotoCaptureActivity : ComponentActivity() {
             finish()
         } else {
             initPhotoSequence()
+        }
+
+        enableEdgeToEdge()
+        setContent {
+            PhotoCaptureUI(previewBitmap)
+        }
+    }
+
+    @Composable
+    fun PhotoCaptureUI(previewBitmap: State<Bitmap?>) {
+        Box(modifier = Modifier
+            .fillMaxSize()
+            .background(Color.LightGray)) {
+            previewBitmap.value?.let { bmp ->
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Captured Photo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } ?: run {
+                Text(
+                    "Capturing photo...",
+                    style = TextStyle(fontSize = 31.sp),
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
         }
     }
 
@@ -101,31 +156,92 @@ class PhotoCaptureActivity : ComponentActivity() {
             }
 
             override fun onImageSaved(results: ImageCapture.OutputFileResults) {
-                results.savedUri?.let {
-                    outputFiles += it
-                }
+                outputFiles += file
                 runOnUiThread { onDone() }
             }
         })
     }
 
     private fun sendAllAndFinish() {
-        outputFiles.forEach { uri ->
-            Intent(Intent.ACTION_SEND).apply {
-                type = "image/jpeg"
-                putExtra("address", recipient)
-                putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(
-                    "sms_body",
-                    "Photo from ${if (uri.path?.contains("front") == true) "front" else "back"} camera"
-                )
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                setPackage("com.android.mms")
-            }.also { runOnUiThread { startActivity(it) } }
-        }
-        runOnUiThread {
+        lifecycleScope.launch {
+            for (file in outputFiles) {
+                try {
+                    val resized = try {
+                        resizeImageToFitMmsLimit(this@PhotoCaptureActivity, file).apply {
+                            deleteOnExit()
+                        }
+                    } catch (e: Exception) {
+                        Log.w("PhotoCapture", "Resize failed, using original", e)
+                        file
+                    }
+                    previewBitmap.value = BitmapFactory.decodeFile(resized.absolutePath)
+                    val url = withContext(Dispatchers.IO) {
+                        ImageUploadService.uploadToImgur(this@PhotoCaptureActivity, resized)
+                    }
+
+                    SmsSenderService.sendReply(
+                        this@PhotoCaptureActivity,
+                        recipient,
+                        "📸 $url"
+                    )
+                    file.delete()
+                    resized.delete()
+                } catch (e: Exception) {
+                    Log.e("PhotoCapture", "Image upload failed", e)
+                    SmsSenderService.sendReply(
+                        this@PhotoCaptureActivity,
+                        recipient,
+                        "Upload failed (${file.name}): ${e.message?.take(160) ?: "Unknown error"}"
+                    )
+                } finally {
+                    file.delete()
+                }
+            }
             finish()
         }
+    }
+
+    suspend fun resizeImageToFitMmsLimit(
+        context: Context,
+        inputFile: File,
+        maxBytes: Int = 300_000
+    ): File = withContext(Dispatchers.IO) {
+        var bitmap = BitmapFactory.decodeFile(inputFile.absolutePath)
+            ?: throw IllegalArgumentException("Cannot decode image file: $inputFile")
+
+        var quality = 90
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+
+        while (stream.size() > maxBytes && quality > 10) {
+            stream.reset()
+            quality -= 10
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+        }
+
+        if (stream.size() > maxBytes) {
+            val ratio = sqrt(maxBytes.toDouble() / stream.size())
+            val newW = (bitmap.width * ratio).toInt()
+            val newH = (bitmap.height * ratio).toInt()
+            bitmap = Bitmap.createScaledBitmap(bitmap, newW, newH, true)
+
+            quality = 90
+            stream.reset()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+            while (stream.size() > maxBytes && quality > 10) {
+                stream.reset()
+                quality -= 10
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+            }
+        }
+
+        val outFile = File(context.cacheDir, "resized_${inputFile.name}")
+        FileOutputStream(outFile).use { fos ->
+            fos.write(stream.toByteArray())
+        }
+
+        stream.close()
+        return@withContext outFile
     }
 
     override fun onDestroy() {

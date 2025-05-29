@@ -1,8 +1,11 @@
 package at.roboalex2.rdc.service
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.app.ActivityOptions
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -28,26 +31,27 @@ import java.util.Locale
 
 class SmsProcessingService : Service() {
     companion object {
-        private const val CHANNEL_ID = "worker_fg_channel"
+        private const val CHANNEL_ID = "worker_rdc_channel"
         private const val CHANNEL_NAME = "Background Worker"
-        private const val NOTIF_ID = 4242
+        private const val NOTIF_ID = 2424
 
         const val EXTRA_SENDER = "extra_sender"
-        const val EXTRA_BODY   = "extra_body"
+        const val EXTRA_BODY = "extra_body"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    @SuppressLint("ServiceCast")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val sender = intent?.getStringExtra(EXTRA_SENDER) ?: return START_NOT_STICKY
-        val body   = intent.getStringExtra(EXTRA_BODY)   ?: return START_NOT_STICKY
+        val body = intent.getStringExtra(EXTRA_BODY) ?: return START_NOT_STICKY
         Log.i(this.javaClass.name, "Foreground service SMS with $sender: $body")
 
         val parts = body.split("\\s+".toRegex(), limit = 2)
         val cmd = parts[0].lowercase(Locale.US)
         val args = if (parts.size > 1) parts[1].lowercase(Locale.US) else ""
-        val dao    = AppDatabase.getDatabase(applicationContext).numberDao()
-        val perms  = runBlocking { dao.getNumber(sender)?.permissions ?: emptyList() }
+        val dao = AppDatabase.getDatabase(applicationContext).numberDao()
+        val perms = runBlocking { dao.getNumber(sender)?.permissions ?: emptyList() }
         Log.i(this.javaClass.name, "Foreground service SMS with $cmd, $args and perm success")
 
         if (perms.isEmpty()) {
@@ -85,15 +89,31 @@ class SmsProcessingService : Service() {
             showExecutionNotification(this, sender, cmd)
             stopSelf()
         } else if (("camera".equals(cmd, true) || "photo".equals(cmd, true)) && "Camera" in perms) {
-            ensureForegroundServiceWithNotification()
-            Intent(this, PhotoCaptureActivity::class.java).apply {
+            val activity = Intent(this, PhotoCaptureActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 putExtra(PhotoCaptureActivity.EXTRA_RECIPIENT, sender)
-            }.also { startActivity(it) }
+            }
+
+            val toBundle = ActivityOptions.makeBasic().apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    setPendingIntentCreatorBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                    )
+                }
+            }.toBundle()
+
+            val fullScreenPI = PendingIntent.getActivity(
+                this, 0, activity,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                toBundle
+            )
+            ensureForegroundServiceWithNotification(fullScreenPI)
+            startActivity(activity, toBundle)
             saveCommandExecution(sender, cmd)
             stopForeground(STOP_FOREGROUND_REMOVE)
             showExecutionNotification(this, sender, cmd)
             stopSelf()
+            return START_NOT_STICKY
         }
         return START_NOT_STICKY
     }
@@ -106,30 +126,51 @@ class SmsProcessingService : Service() {
                 .insertCommand(
                     CommandEntity(
                         dateTime = Date().toString(),
-                        issuer   = issuer,
-                        type     = command
+                        issuer = issuer,
+                        type = command
                     )
                 )
         }
     }
 
-    private fun ensureForegroundServiceWithNotification() {
+    private fun ensureForegroundServiceWithNotification(
+        fullScreenPendingIntent: PendingIntent? = null
+    ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val chan = NotificationChannel(
-                CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Rdc is executing command..." }
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(chan)
-            chan.setBypassDnd(true)
+                CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Rdc is executing command..."
+                setBypassDnd(true)
+                setShowBadge(true)
+            }.also {
+                getSystemService(NotificationManager::class.java)
+                    .createNotificationChannel(it)
+            }
         }
-        // build & start
+
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Executing Command…")
+            .setContentTitle("Executing Remote Command…")
             .setOngoing(true)
             .setSilent(true)
-            .build()
-        startForeground(NOTIF_ID, notif)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+
+        fullScreenPendingIntent?.let {
+            Log.i(this.javaClass.name, "Setting full screen intent for notification")
+            notif.setContentText("Tap me for photo")
+            notif.addAction(
+                R.drawable.ic_launcher_foreground,
+                "Take Photo",
+                it
+            )
+            notif.setFullScreenIntent(it, true)
+            notif.setSilent(false)
+            notif.setOngoing(false)
+            notif.setAutoCancel(true)
+        }
+        startForeground(NOTIF_ID, notif.build())
     }
 
     private fun playAlertSound() {

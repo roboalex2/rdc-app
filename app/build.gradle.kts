@@ -56,6 +56,7 @@ dependencies {
     implementation(libs.play.services.location)
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.camera2)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -73,5 +74,6 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
+    implementation(libs.okhttp)
     ksp(libs.room.compiler)
 }

@@ -42,6 +42,8 @@ ksp = { module = "com.google.devtools.ksp:symbol-processing-api", version.ref = 
 play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
 androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "cameraCore" }
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraLifecycle" }
+androidx-camera-camera2    = { group = "androidx.camera", name = "camera-camera2",  version.ref = "cameraCore" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version = "4.11.0" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
