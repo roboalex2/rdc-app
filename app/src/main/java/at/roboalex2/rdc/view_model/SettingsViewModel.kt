@@ -40,7 +40,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun addNumber(number: String) = viewModelScope.launch {
         val exists = dao.getAllNumbers()
             .first()
-            .any { it.number == PhoneNumberUtils.normalizeNumber(number) }
+            .any { PhoneNumberUtils.compare(it.number, PhoneNumberUtils.normalizeNumber(number)) }
         if (!exists) {
             dao.upsertNumber(NumberItemEntity(number, permissions = emptyList()))
         }
